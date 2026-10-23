@@ -1,5 +1,5 @@
 // cache do app para funcionar offline. ao atualizar o index.html, a nova versão é baixada sozinha quando houver internet.
-const CACHE = 'saldos-v2';
+const CACHE = 'saldos-v3';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

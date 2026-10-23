@@ -320,6 +320,20 @@ details.help ol{margin:0 0 12px;padding-left:20px;line-height:1.7;color:var(--te
 .okdot{width:10px;height:10px;border-radius:50%;background:var(--success);display:inline-block}
 .errdot{width:10px;height:10px;border-radius:50%;background:var(--error);display:inline-block}
 .waitdot{width:10px;height:10px;border-radius:50%;background:var(--warning);display:inline-block}
+.locked .app{display:none}
+#login{position:fixed;inset:0;display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));background:var(--bg-canvas);z-index:200}
+.lcard{width:360px;max-width:100%;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px 24px;box-shadow:0 12px 40px var(--shadow);display:flex;flex-direction:column;gap:14px}
+.lcard h2{margin:6px 0 0;font-size:20px}
+.lcard label{display:flex;flex-direction:column;gap:6px;font-weight:700}
+.lcard .lchk{flex-direction:row;align-items:center;gap:8px;font-weight:500;color:var(--text-secondary);cursor:pointer}
+.lchk input{accent-color:var(--brand);width:16px;height:16px;margin:0}
+.llogo{display:flex;align-items:center;gap:8px}
+.pw{position:relative;display:block}
+.pw .txtin{padding-right:76px}
+.pwt{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-muted);padding:4px 8px;border-radius:8px}
+.pwt:hover{background:var(--bg-subtle)}
+.lcard .primary{margin-top:2px}
+.lcard .primary:disabled{opacity:.6;cursor:default}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--text-primary);color:var(--bg-canvas);padding:10px 18px;border-radius:12px;z-index:100;font-weight:500;animation:pp .15s}
 
 @media (max-width:760px){
@@ -437,6 +451,7 @@ const SV = {
   gift: sv('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/>'),
   chart: sv('<path d="M3 3v18h18"/><path d="M7 15v2M11 10v7M15 12v5M19 6v11"/>'),
   cloud: sv('<path d="M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/>'),
+  logout: sv('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   search: sv('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>')
 };
 
@@ -527,7 +542,7 @@ function adoptRemote(data, at) {
   render();
 }
 async function syncNow() {
-  if (!SY || !SY.gistId) return;
+  if (!UNLOCKED || !SY || !SY.gistId) return;
   if (SYS.busy) { SYS.again = true; return; }
   SYS.busy = true; SYS.again = false; setSync('sync');
   try {
@@ -1076,7 +1091,8 @@ function renderMenu() {
   const back = `<button class="back" data-act="menu-go" data-v="">‹ menu</button>`;
   if (!v) return `<div class="narrow sm">
     <div class="prof"><div class="av">${esc((S.usuario || '?')[0].toUpperCase())}</div><div><b>${esc(S.usuario)}</b><span class="badge">assinatura ativa</span></div></div>
-    <div class="lst">${mrow('perfil', '', SV.user, 'editar perfil')}${mrow('menu-go', 'previsao', ic('diario', false, '', true), 'previsão de diário')}${mrow('menu-go', 'cartoes', SV.card, 'cartões de crédito')}${mrow('menu-go', 'sync', SV.cloud, 'sincronizar entre aparelhos', SY && SY.gistId ? '<span class="okdot" title="ativa"></span>' : '')}${mrow('menu-go', 'config', SV.gear, 'configurações')}</div></div>`;
+    <div class="lst">${mrow('perfil', '', SV.user, 'editar perfil')}${mrow('menu-go', 'previsao', ic('diario', false, '', true), 'previsão de diário')}${mrow('menu-go', 'cartoes', SV.card, 'cartões de crédito')}${mrow('menu-go', 'sync', SV.cloud, 'sincronizar entre aparelhos', SY && SY.gistId ? '<span class="okdot" title="ativa"></span>' : '')}${mrow('menu-go', 'config', SV.gear, 'configurações')}</div>
+    <div class="lst" style="margin-top:14px"><button class="row link" data-act="logout"><span class="ri">${SV.logout}</span><span class="grow">sair</span></button></div></div>`;
   if (v === 'previsao') {
     const g = S.previsao.gastosMensais, tot = g.reduce((a, x) => a + x.valor, 0);
     return `<div class="narrow sm">${back}
@@ -1540,6 +1556,7 @@ const ACT = {
       render();
     });
   },
+  logout: () => ask('sair do app neste aparelho? seus dados continuam salvos.', 'sair', () => { for (const st of [localStorage, sessionStorage]) { try { st.removeItem(SESS); } catch (e) {} } location.reload(); }, false),
   exp: exportar,
   imp: () => $('#impfile').click(),
   exemplo: () => S.movs.length ? ask('carregar o exemplo substitui seus dados atuais. continuar?', 'carregar exemplo', exemplo) : exemplo(),
@@ -1587,14 +1604,75 @@ document.addEventListener('mouseover', e => { const t = e.target.closest && e.ta
 document.addEventListener('mousemove', e => { if (TIP.style.display === 'block') placeTip(e); });
 document.addEventListener('click', e => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t && matchMedia('(hover: none)').matches) { TIP.innerHTML = t.getAttribute('data-tip'); TIP.style.display = 'block'; placeTip(e); } });
 
-if (SY && SY.gistId) SYS.status = 'idle';
-render();
-scrollToday(false);
+/* ============ login ============ */
+// a senha não fica no código: só uma impressão digital (PBKDF2-SHA256) para conferir o que for digitado
+const AUTH = { u: 'vinicius', salt: 'HJDqKUQo02qdLZ1ff+Xnog==', it: 210000, h: 'k3p9vsuP6aomEigJAajsAJ/MHwIrY7slkxKHRul50tI=' };
+const SESS = 'saldos.sessao';
+let UNLOCKED = false;
+function sessOk() {
+  for (const st of [localStorage, sessionStorage]) {
+    try { const x = JSON.parse(st.getItem(SESS)); if (x && x.k === AUTH.h.slice(0, 12) && (!x.exp || x.exp > Date.now())) return true; } catch (e) {}
+  }
+  return false;
+}
+async function checkPass(u, p) {
+  if (u.trim().toLowerCase() !== AUTH.u) { await new Promise(r => setTimeout(r, 500)); return false; }
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(p), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: unb64(AUTH.salt), iterations: AUTH.it, hash: 'SHA-256' }, base, 256);
+  return b64(bits) === AUTH.h;
+}
+function startApp() {
+  UNLOCKED = true;
+  document.body.classList.remove('locked');
+  if (SY && SY.gistId) SYS.status = 'idle';
+  render();
+  scrollToday(false);
+  if (SY && SY.gistId) syncNow();
+}
+function showLogin() {
+  document.body.classList.add('locked');
+  const el = document.createElement('div'); el.id = 'login';
+  el.innerHTML = `<form class="lcard" autocomplete="on" novalidate>
+    <div class="llogo"><span class="lg">s</span><span class="lt">saldos</span></div>
+    <h2>entrar</h2>
+    <label>usuário<input class="txtin" id="lg-u" name="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <label>senha<span class="pw"><input class="txtin" id="lg-p" type="password" name="password" autocomplete="current-password"><button type="button" class="pwt" id="lg-eye">mostrar</button></span></label>
+    <label class="lchk"><input type="checkbox" id="lg-keep" checked> manter conectado neste aparelho</label>
+    <div class="err" id="lg-err"></div>
+    <button class="primary dark" id="lg-btn" type="submit">entrar</button></form>`;
+  document.body.appendChild(el);
+  const $u = el.querySelector('#lg-u'), $p = el.querySelector('#lg-p'), $e = el.querySelector('#lg-err'), $b = el.querySelector('#lg-btn');
+  let tries = 0, lockUntil = 0;
+  el.querySelector('#lg-eye').onclick = e => { const show = $p.type === 'password'; $p.type = show ? 'text' : 'password'; e.target.textContent = show ? 'ocultar' : 'mostrar'; };
+  setTimeout(() => $u.focus(), 50);
+  el.querySelector('form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    if (Date.now() < lockUntil) return;
+    if (!$u.value.trim() || !$p.value) { $e.textContent = 'preencha usuário e senha.'; return; }
+    if (!window.crypto || !crypto.subtle) { $e.textContent = 'abra o app pelo link https para entrar.'; return; }
+    $b.disabled = true; $b.textContent = 'entrando…'; $e.textContent = '';
+    let ok = false;
+    try { ok = await checkPass($u.value, $p.value); } catch (e) {}
+    if (ok) {
+      const sess = JSON.stringify({ k: AUTH.h.slice(0, 12), exp: Date.now() + 90 * 864e5 });
+      try { (el.querySelector('#lg-keep').checked ? localStorage : sessionStorage).setItem(SESS, sess); } catch (e) {}
+      el.remove(); startApp(); return;
+    }
+    tries++; $p.value = ''; $p.focus();
+    if (tries >= 5) {
+      lockUntil = Date.now() + 30000; tries = 0;
+      const tick = () => { const s = Math.ceil((lockUntil - Date.now()) / 1000); if (s > 0) { $b.textContent = `aguarde ${s}s`; setTimeout(tick, 500); } else { $b.disabled = false; $b.textContent = 'entrar'; $e.textContent = ''; } };
+      $e.textContent = 'muitas tentativas. aguarde 30 segundos.'; tick(); return;
+    }
+    $e.textContent = 'usuário ou senha incorretos.'; $b.disabled = false; $b.textContent = 'entrar';
+  });
+}
+applyTheme();
+if (sessOk()) startApp(); else showLogin();
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
 }
-if (SY && SY.gistId) syncNow();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
 addEventListener('online', () => syncNow());
 setInterval(() => { if (document.visibilityState === 'visible' && !SYS.busy) syncNow(); }, 60000);
