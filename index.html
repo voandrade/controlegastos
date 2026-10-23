@@ -303,6 +303,23 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .tip .tr i{width:8px;height:8px;border-radius:2px;display:inline-block}
 .tip .tr em{font-style:normal;font-weight:700;font-variant-numeric:tabular-nums}
 @media (max-width:760px){.ahero{grid-template-columns:1fr 1fr}.viz{grid-template-columns:1fr}.hbr{grid-template-columns:110px 1fr 90px}.nv{font-size:9px}}
+.syncpill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:5px 12px;font-weight:500;font-size:12.5px;color:var(--text-secondary);background:var(--surface);white-space:nowrap}
+.syncpill svg{width:15px;height:15px}
+.syncpill.err{color:var(--error);border-color:var(--error)}
+.syncpill.ok svg{color:var(--success)}
+.tright-wrap{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.txtin{width:100%;border:1px solid var(--border);border-radius:12px;padding:11px 12px;background:var(--surface);font-size:14px;outline:none}
+.txtin:focus{border-color:var(--text-primary)}
+.fld{display:flex;flex-direction:column;gap:6px;padding:12px 16px;border-bottom:1px solid var(--grid)}
+.fld label{font-weight:700}
+.fld small{color:var(--text-muted)}
+.note{color:var(--text-muted);font-size:12.5px;line-height:1.5;margin:10px 2px}
+details.help{border:1px solid var(--border);border-radius:16px;background:var(--surface);margin-top:14px;padding:4px 16px}
+details.help summary{cursor:pointer;font-weight:700;padding:10px 0}
+details.help ol{margin:0 0 12px;padding-left:20px;line-height:1.7;color:var(--text-secondary)}
+.okdot{width:10px;height:10px;border-radius:50%;background:var(--success);display:inline-block}
+.errdot{width:10px;height:10px;border-radius:50%;background:var(--error);display:inline-block}
+.waitdot{width:10px;height:10px;border-radius:50%;background:var(--warning);display:inline-block}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--text-primary);color:var(--bg-canvas);padding:10px 18px;border-radius:12px;z-index:100;font-weight:500;animation:pp .15s}
 
 @media (max-width:760px){
@@ -419,6 +436,7 @@ const SV = {
   gear: sv('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'),
   gift: sv('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/>'),
   chart: sv('<path d="M3 3v18h18"/><path d="M7 15v2M11 10v7M15 12v5M19 6v11"/>'),
+  cloud: sv('<path d="M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/>'),
   search: sv('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>')
 };
 
@@ -431,10 +449,127 @@ function load() {
 }
 let S = load();
 let CACHE = null, D = null;
-function save() {
-  try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) {}
-  CACHE = null; render();
+function persistLocal() { try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) {} CACHE = null; }
+function save() { persistLocal(); render(); syncMarkDirty(); }
+
+/* ============ sincronização na nuvem (GitHub Gist privado, criptografado) ============ */
+const SYNC_KEY = 'saldos.sync', SYNC_FILE = 'saldos-sync.json', SYNC_DESC = 'saldos — dados sincronizados (criptografados)';
+let SY = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || null; } catch (e) { return null; } })();
+const SYS = { status: 'off', msg: '', at: null, timer: null, busy: false, again: false };
+function sySave() { try { SY && SY.gistId ? localStorage.setItem(SYNC_KEY, JSON.stringify(SY)) : localStorage.removeItem(SYNC_KEY); } catch (e) {} }
+function b64(buf) { const a = new Uint8Array(buf); let s = ''; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); }
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+let KEYCACHE = null;
+async function getKey(salt) {
+  if (KEYCACHE && KEYCACHE.salt === salt && KEYCACHE.senha === SY.senha) return KEYCACHE.key;
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(SY.senha), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(salt), iterations: 210000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  KEYCACHE = { salt, senha: SY.senha, key }; return key;
 }
+async function encrypt(obj, salt) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await getKey(salt), new TextEncoder().encode(JSON.stringify(obj)));
+  return { iv: b64(iv), ct: b64(ct) };
+}
+async function decryptOrFail(env) {
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(env.iv) }, await getKey(env.salt), unb64(env.ct));
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch (e) { const er = new Error('a senha de sincronização não confere com a usada nos outros aparelhos'); er.senha = true; throw er; }
+}
+async function gh(path, opt = {}) {
+  let r;
+  try {
+    r = await fetch('https://api.github.com' + path, { method: opt.method || 'GET', body: opt.body, cache: 'no-store',
+      headers: Object.assign({ Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + SY.token }, opt.body ? { 'Content-Type': 'application/json' } : {}) });
+  } catch (e) { const er = new Error('sem conexão com a internet'); er.offline = true; throw er; }
+  if (r.ok) return r.status === 204 ? null : r.json();
+  const er = new Error(r.status === 401 ? 'token inválido ou expirado'
+    : r.status === 403 ? 'o github recusou o acesso (confira se o token tem a permissão "gist")'
+    : r.status === 404 ? (path.startsWith('/gists/') ? 'os dados da nuvem não foram encontrados' : 'o token não tem a permissão "gist"')
+    : 'o github respondeu com erro ' + r.status);
+  er.status = r.status; throw er;
+}
+async function readRemote() {
+  const g = await gh('/gists/' + SY.gistId);
+  const f = g.files && g.files[SYNC_FILE];
+  if (!f) throw new Error('os dados da nuvem não foram encontrados');
+  let txt = f.content;
+  if (f.truncated) txt = await (await fetch(f.raw_url, { cache: 'no-store' })).text();
+  return JSON.parse(txt);
+}
+const writeRemote = env => gh('/gists/' + SY.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [SYNC_FILE]: { content: JSON.stringify(env) } } }) });
+async function findGist() {
+  for (let page = 1; page <= 10; page++) {
+    const list = await gh(`/gists?per_page=100&page=${page}`);
+    const hit = list.find(g => g.files && g.files[SYNC_FILE]);
+    if (hit) return hit.id;
+    if (list.length < 100) break;
+  }
+  return null;
+}
+function setSync(status, msg) {
+  SYS.status = status; SYS.msg = msg || '';
+  if (status === 'ok') SYS.at = new Date();
+  try { renderTop(); if (U.page === 'menu' && U.menuView === 'sync') renderContent(); } catch (e) {}
+}
+async function push(salt) {
+  const rev = SY.rev, at = Date.now();
+  const env = Object.assign({ v: 1, app: 'saldos', updatedAt: at, salt }, await encrypt(S, salt));
+  await writeRemote(env);
+  SY.lastRemote = at;
+  if (SY.rev === rev) SY.syncedRev = rev; else SYS.again = true;
+  sySave();
+}
+function adoptRemote(data, at) {
+  S = Object.assign(defaultState(), data); persistLocal();
+  SY.lastRemote = at; SY.localAt = at; SY.syncedRev = SY.rev; sySave();
+  render();
+}
+async function syncNow() {
+  if (!SY || !SY.gistId) return;
+  if (SYS.busy) { SYS.again = true; return; }
+  SYS.busy = true; SYS.again = false; setSync('sync');
+  try {
+    const remote = await readRemote();
+    const rAt = remote.updatedAt || 0, dirty = SY.rev !== SY.syncedRev, remoteNew = rAt > (SY.lastRemote || 0);
+    if (remoteNew && (!dirty || rAt > (SY.localAt || 0))) {
+      const data = await decryptOrFail(remote);
+      adoptRemote(data, rAt);
+      if (dirty) toast('havia uma versão mais recente em outro aparelho e ela foi carregada');
+    } else if (dirty || remoteNew) await push(remote.salt);
+    setSync('ok');
+  } catch (e) { setSync(e.offline ? 'pending' : 'err', e.message); }
+  finally { SYS.busy = false; if (SYS.again) setTimeout(syncNow, 300); }
+}
+function syncMarkDirty() {
+  if (!SY || !SY.gistId) return;
+  SY.rev = (SY.rev || 0) + 1; SY.localAt = Date.now(); sySave();
+  clearTimeout(SYS.timer); SYS.timer = setTimeout(syncNow, 1200);
+  if (SYS.status !== 'sync') setSync('sync');
+}
+async function conectar(token, senha) {
+  const prev = SY;
+  SY = { token, senha, gistId: null, lastRemote: 0, localAt: 0, rev: 0, syncedRev: 0 };
+  KEYCACHE = null;
+  try {
+    const me = await gh('/user'); SY.login = me.login;
+    const id = await findGist();
+    if (!id) {
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16))), at = Date.now();
+      const env = Object.assign({ v: 1, app: 'saldos', updatedAt: at, salt }, await encrypt(S, salt));
+      const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: SYNC_DESC, public: false, files: { [SYNC_FILE]: { content: JSON.stringify(env) } } }) });
+      SY.gistId = g.id; SY.lastRemote = at; SY.localAt = at; sySave();
+      return { created: true };
+    }
+    SY.gistId = id;
+    const remote = await readRemote();
+    const data = await decryptOrFail(remote);
+    return { remote, data };
+  } catch (e) { SY = prev; KEYCACHE = null; throw e; }
+}
+function desconectar() { SY = null; KEYCACHE = null; clearTimeout(SYS.timer); try { localStorage.removeItem(SYNC_KEY); } catch (e) {} setSync('off'); }
+const temDados = () => !!(S.movs.length || S.cartoes.length || S.tags.length || (S.desejos || []).length || S.previsao.gastosMensais.length || S.saldoInicial);
 const U = {
   page: 'saldos', start: { y: TP.y, m: TP.m }, mostrar: 'atual',
   totais: { y: TP.y, m: TP.m }, tagsMonth: { y: TP.y, m: TP.m },
@@ -566,8 +701,13 @@ function renderTop() {
   else if (U.page === 'tags') c = mnav('gm', U.tagsMonth);
   else if (U.page === 'analise') c = mnav('am', U.analise);
   $('#tcenter').innerHTML = c;
-  $('#tright').innerHTML = !S.movs.length && (U.page === 'saldos' || U.page === 'horizonte' || U.page === 'totais')
-    ? `<button class="pill" data-act="exemplo">carregar exemplo</button>` : '';
+  let sp = '';
+  if (SY && SY.gistId) {
+    const L = { ok: 'sincronizado', sync: 'sincronizando…', pending: 'sem internet · envia depois', err: 'erro na sincronização', off: 'sincronização', idle: 'sincronização' };
+    const tt = SYS.status === 'ok' && SYS.at ? `sincronizado às ${SYS.at.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : SYS.msg;
+    sp = `<button class="syncpill ${SYS.status}" data-act="sync-open" title="${esc(tt)}">${SV.cloud}${L[SYS.status] || 'sincronização'}</button>`;
+  }
+  $('#tright').innerHTML = `<div class="tright-wrap">${sp}</div>`;
 }
 function renderContent() {
   const c = $('#content');
@@ -936,7 +1076,7 @@ function renderMenu() {
   const back = `<button class="back" data-act="menu-go" data-v="">‹ menu</button>`;
   if (!v) return `<div class="narrow sm">
     <div class="prof"><div class="av">${esc((S.usuario || '?')[0].toUpperCase())}</div><div><b>${esc(S.usuario)}</b><span class="badge">assinatura ativa</span></div></div>
-    <div class="lst">${mrow('perfil', '', SV.user, 'editar perfil')}${mrow('menu-go', 'previsao', ic('diario', false, '', true), 'previsão de diário')}${mrow('menu-go', 'cartoes', SV.card, 'cartões de crédito')}${mrow('menu-go', 'config', SV.gear, 'configurações')}</div></div>`;
+    <div class="lst">${mrow('perfil', '', SV.user, 'editar perfil')}${mrow('menu-go', 'previsao', ic('diario', false, '', true), 'previsão de diário')}${mrow('menu-go', 'cartoes', SV.card, 'cartões de crédito')}${mrow('menu-go', 'sync', SV.cloud, 'sincronizar entre aparelhos', SY && SY.gistId ? '<span class="okdot" title="ativa"></span>' : '')}${mrow('menu-go', 'config', SV.gear, 'configurações')}</div></div>`;
   if (v === 'previsao') {
     const g = S.previsao.gastosMensais, tot = g.reduce((a, x) => a + x.valor, 0);
     return `<div class="narrow sm">${back}
@@ -952,6 +1092,41 @@ function renderMenu() {
     return `<div class="narrow sm">${back}
       <div class="sh"><h2>cartões de crédito</h2><button class="iconbtn" data-act="card-add" title="adicionar cartão">+</button></div>
       <div class="lst">${S.cartoes.length ? S.cartoes.map(c => `<div class="row">${ic('cartao')}<span class="grow"><b>${esc(c.nome)}</b><br><small class="muted">dia do fechamento: ${c.diaFechamento} · dia do vencimento: ${c.diaVencimento}</small></span><button class="dots" data-act="card-menu" data-id="${c.id}">⋮</button></div>`).join('') : '<div class="empty">nenhum cartão cadastrado.</div>'}</div></div>`;
+  }
+  if (v === 'sync') {
+    const help = `<details class="help"><summary>como criar o token no github</summary><ol>
+      <li>no github (pelo computador), clique na sua foto no canto superior direito › <b>settings</b></li>
+      <li>no fim do menu da esquerda: <b>developer settings</b> › <b>personal access tokens</b> › <b>tokens (classic)</b></li>
+      <li><b>generate new token</b> › <b>generate new token (classic)</b></li>
+      <li>em <i>note</i> escreva <b>saldos</b>; em <i>expiration</i> escolha <b>no expiration</b></li>
+      <li>marque <b>apenas</b> a caixa <b>gist</b> e clique em <b>generate token</b></li>
+      <li>copie o código (começa com <b>ghp_</b>). ele só aparece uma vez: guarde no app de notas ou de senhas</li></ol></details>`;
+    if (!SY || !SY.gistId) return `<div class="narrow sm">${back}
+      <h2 class="sec">sincronizar entre aparelhos</h2>
+      <p class="note" style="margin-top:0">seus dados ficam guardados numa área privada da sua conta do github, criptografados com uma senha que só você sabe. funciona no safari, no chrome e no app do ipad: em cada lugar, conecte com o <b>mesmo token</b> e a <b>mesma senha</b>.</p>
+      <div class="lst">
+        <div class="fld"><label for="sy-token">token do github</label><input id="sy-token" class="txtin" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ghp_..."></div>
+        <div class="fld"><label for="sy-senha">senha de sincronização</label><input id="sy-senha" class="txtin" type="password" autocomplete="new-password" placeholder="mínimo 6 caracteres"><small>use a mesma senha em todos os aparelhos. se você esquecer, os dados da nuvem não podem ser abertos (os deste aparelho continuam).</small></div>
+      </div>
+      <div class="err" id="sy-err"></div>
+      <button class="primary dark" data-act="sync-connect" id="sy-btn">conectar</button>
+      ${help}</div>`;
+    const st = SYS.status, quando = SYS.at ? SYS.at.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+    const linha = st === 'ok' ? `<span class="okdot"></span><span class="grow">sincronizado${quando ? ' às ' + quando : ''}</span>`
+      : st === 'sync' ? `<span class="waitdot"></span><span class="grow">sincronizando…</span>`
+      : st === 'pending' ? `<span class="waitdot"></span><span class="grow">sem internet — as alterações serão enviadas quando a conexão voltar</span>`
+      : st === 'err' ? `<span class="errdot"></span><span class="grow danger-t">${esc(SYS.msg)}</span>`
+      : `<span class="waitdot"></span><span class="grow">aguardando</span>`;
+    return `<div class="narrow sm">${back}
+      <h2 class="sec">sincronizar entre aparelhos</h2>
+      <div class="lst">
+        <div class="row">${linha}</div>
+        <div class="row"><span class="ri">${SV.user}</span><span class="grow">conta do github<br><small class="muted">${esc(SY.login || '')}</small></span></div>
+        <button class="row link" data-act="sync-now"><span class="ri">${SV.rep}</span><span class="grow">sincronizar agora</span><span class="chev">›</span></button>
+        <button class="row link" data-act="sync-off"><span class="grow danger-t">desconectar este aparelho</span></button>
+      </div>
+      <p class="note">cada alteração é enviada para a nuvem em poucos segundos. ao abrir o app em outro aparelho ou navegador, ele baixa a versão mais recente. se você mexer em dois lugares ao mesmo tempo, vale a alteração mais recente.</p>
+      <p class="note">para conectar outro aparelho: abra o app nele, vá em menu › sincronizar entre aparelhos e use o mesmo token e a mesma senha.</p></div>`;
   }
   if (v === 'config') {
     const t = S.config.tema;
@@ -1051,6 +1226,19 @@ function ask(msg, okLabel, cb, danger = true) {
     e.stopPropagation();
     if (e.target === el || e.target.closest('[data-x]')) el.remove();
     else if (e.target.closest('[data-ok]')) { el.remove(); cb(); }
+  });
+}
+function choose(msg, opts, cb) {
+  const el = document.createElement('div'); el.className = 'ov center'; el.style.zIndex = 70;
+  el.innerHTML = `<div class="modal sm"><p style="margin:4px 0 6px;font-size:15px;line-height:1.45">${msg}</p>
+    ${opts.map(o => `<button class="primary ${o.cls === 'light' ? '' : 'dark'}" style="margin-top:10px;${o.cls === 'light' ? 'background:var(--surface);color:var(--text-primary);border:1px solid var(--border)' : ''}" data-v="${o.v}">${o.label}</button>`).join('')}
+    <button class="ghost" style="width:100%;margin-top:10px" data-x>cancelar</button></div>`;
+  document.body.appendChild(el);
+  el.addEventListener('click', e => {
+    e.stopPropagation();
+    const b = e.target.closest('[data-v]');
+    if (b) { el.remove(); cb(b.dataset.v); }
+    else if (e.target === el || e.target.closest('[data-x]')) { el.remove(); cb(null); }
   });
 }
 function closeModal() { $('#modal-root').innerHTML = ''; }
@@ -1325,11 +1513,38 @@ const ACT = {
     });
   },
   tema: a => { S.config.tema = a.dataset.v; save(); },
+  'sync-open': () => { U.page = 'menu'; U.menuView = 'sync'; render(); },
+  'sync-now': () => syncNow(),
+  'sync-off': () => ask('desconectar este aparelho? os dados daqui continuam, mas param de sincronizar. a cópia na nuvem não é apagada.', 'desconectar', () => { desconectar(); render(); toast('sincronização desligada neste aparelho'); }),
+  'sync-connect': async () => {
+    const token = ($('#sy-token').value || '').trim(), senha = $('#sy-senha').value || '', err = $('#sy-err'), btn = $('#sy-btn');
+    if (!/^(ghp_|github_pat_|gho_)/.test(token)) { err.textContent = 'cole o token do github (começa com ghp_).'; return; }
+    if (senha.length < 6) { err.textContent = 'a senha precisa ter pelo menos 6 caracteres.'; return; }
+    if (!window.crypto || !crypto.subtle) { err.textContent = 'este navegador não permite criptografia aqui. abra o app pelo link https.'; return; }
+    err.textContent = ''; btn.disabled = true; btn.textContent = 'conectando…';
+    let res;
+    try { res = await conectar(token, senha); }
+    catch (e) { err.textContent = e.message; btn.disabled = false; btn.textContent = 'conectar'; return; }
+    if (res.created) { setSync('ok'); render(); toast('sincronização ativada — seus dados foram para a nuvem'); return; }
+    const at = res.remote.updatedAt || Date.now();
+    const usarNuvem = () => { adoptRemote(res.data, at); setSync('ok'); toast('dados da nuvem carregados'); };
+    if (!temDados()) { usarNuvem(); return; }
+    choose('já existem dados na nuvem e também neste aparelho. qual versão você quer manter?<br><small class="muted">a outra será substituída.</small>', [
+      { v: 'nuvem', label: 'usar os dados da nuvem', cls: 'dark' },
+      { v: 'local', label: 'enviar os dados deste aparelho', cls: 'light' }
+    ], async v => {
+      if (!v) { SY = null; KEYCACHE = null; render(); return; }
+      if (v === 'nuvem') return usarNuvem();
+      sySave(); SY.rev = 1; SY.localAt = Date.now(); setSync('sync');
+      try { await push(res.remote.salt); setSync('ok'); toast('dados deste aparelho enviados para a nuvem'); } catch (e) { setSync('err', e.message); }
+      render();
+    });
+  },
   exp: exportar,
   imp: () => $('#impfile').click(),
   exemplo: () => S.movs.length ? ask('carregar o exemplo substitui seus dados atuais. continuar?', 'carregar exemplo', exemplo) : exemplo(),
-  zerar: () => ask('zerar a conta apaga todas as movimentações, cartões, tags e previsões.', 'continuar', () => ask('tem certeza? essa ação não pode ser desfeita.', 'zerar minha conta', () => { S = Object.assign(defaultState(), { usuario: S.usuario, config: S.config }); save(); toast('conta zerada'); })),
-  apagar: () => ask('apagar a conta remove todos os seus dados deste navegador.', 'continuar', () => ask('tem certeza? essa ação não pode ser desfeita.', 'apagar minha conta', () => { try { localStorage.removeItem(STORE); } catch (e) {} S = defaultState(); U.menuView = null; U.page = 'saldos'; save(); toast('conta apagada'); }))
+  zerar: () => ask('zerar a conta apaga todas as movimentações, cartões, tags e previsões' + (SY && SY.gistId ? ' — <b>em todos os aparelhos sincronizados</b>.' : '.'), 'continuar', () => ask('tem certeza? essa ação não pode ser desfeita.', 'zerar minha conta', () => { S = Object.assign(defaultState(), { usuario: S.usuario, config: S.config }); save(); toast('conta zerada'); })),
+  apagar: () => ask('apagar a conta remove todos os seus dados deste navegador' + (SY && SY.gistId ? ' e desconecta a sincronização. a cópia na nuvem continua guardada.' : '.'), 'continuar', () => ask('tem certeza? essa ação não pode ser desfeita.', 'apagar minha conta', () => { desconectar(); try { localStorage.removeItem(STORE); } catch (e) {} S = defaultState(); U.menuView = null; U.page = 'saldos'; save(); toast('conta apagada'); }))
 };
 document.addEventListener('click', e => {
   const a = e.target.closest('[data-act]'); if (!a) return;
@@ -1372,12 +1587,17 @@ document.addEventListener('mouseover', e => { const t = e.target.closest && e.ta
 document.addEventListener('mousemove', e => { if (TIP.style.display === 'block') placeTip(e); });
 document.addEventListener('click', e => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t && matchMedia('(hover: none)').matches) { TIP.innerHTML = t.getAttribute('data-tip'); TIP.style.display = 'block'; placeTip(e); } });
 
+if (SY && SY.gistId) SYS.status = 'idle';
 render();
 scrollToday(false);
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
 }
+if (SY && SY.gistId) syncNow();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+addEventListener('online', () => syncNow());
+setInterval(() => { if (document.visibilityState === 'visible' && !SYS.busy) syncNow(); }, 60000);
 </script>
 </body>
 </html>
